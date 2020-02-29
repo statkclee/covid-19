@@ -1,5 +1,5 @@
 ---
-title: "Coronavirus"
+title: "코로나19"
 output: 
   flexdashboard::flex_dashboard:
     orientation: rows
@@ -45,7 +45,7 @@ df1 <- coronavirus %>% dplyr::filter(date == max(date))
 
 ```
 
-Summary
+요약
 =======================================================================
 Row
 -----------------------------------------------------------------------
