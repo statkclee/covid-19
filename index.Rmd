@@ -83,7 +83,7 @@ valueBox(value = paste(sum(df$death, na.rm = TRUE), " cases (",
 Row
 -----------------------------------------------------------------------
 
-### Total Cases by Type/Country
+### 국가/유형별 현황
 
 ```{r daily_summary}
 
