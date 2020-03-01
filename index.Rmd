@@ -3,8 +3,10 @@ title: "코로나19"
 subtitle: "대쉬보드"
 output: 
   flexdashboard::flex_dashboard:
+    orientation: rows    
     theme: readable
-    orientation: rows
+    social: menu
+    source_code: embed
     vertical_layout: fill
 editor_options: 
   chunk_output_type: console
@@ -13,8 +15,38 @@ editor_options:
 ```{r setup, include=FALSE}
 library(flexdashboard)
 library(tidyverse)
+library(janitor)
+library(coronavirus)
 library(extrafont)
 loadfonts()
+
+
+world <- coronavirus %>% 
+  clean_names() %>% 
+  group_by(country_region, type) %>%
+  summarise(total = sum(cases)) %>%
+  pivot_wider(names_from =  type, 
+              values_from = total) %>%
+  arrange(-confirmed) %>%
+  ungroup() %>%
+  mutate(country = case_when(country_region == "United Arab Emirates" ~ "UAE",
+                             country_region == "Mainland China" ~ "China",
+                             country_region == "North Macedonia" ~ "N.Macedonia",
+                             TRUE ~ country_region) %>% trimws()
+  ) %>% 
+  mutate_if(is.character, factor)
+
+world_daily <- coronavirus %>% 
+  dplyr::group_by(date, type) %>%
+  summarise(total = sum(cases, na.rm = TRUE)) %>%
+  pivot_wider(names_from = type,
+              values_from = total) %>%
+  arrange(date) %>%
+  ungroup() %>%
+  mutate(confirmed_cum = cumsum(confirmed),
+         death_cum = cumsum(death),
+         recovered_cum = cumsum(recovered))
+
 
 ```
 
@@ -22,26 +54,11 @@ loadfonts()
 전세계 {data-icon="fa-globe"}
 ===================================
 
-Row {data-width=150} 
+Row 
 --------------------------------------------
 
 
-```{r ingest-corona}
-library(coronavirus)
-data('coronavirus')
-
-coronavirus <- coronavirus %>% 
-  janitor::clean_names() %>% 
-  rename(country = country_region,
-         province = province_state)
-
-cv_stat <- coronavirus %>% 
-  group_by(type) %>% 
-  summarise(합계 = sum(cases))
-
-```
-
-### 검사자수
+### 검사자수 {.value-box}
 
 ```{r tested}
 valueBox(NA, 
@@ -50,134 +67,140 @@ valueBox(NA,
 ```
 
 
-### 확진자수
+### 확진자수 {.value-box}
 
 ```{r infected}
-infected <- cv_stat %>% filter(type=='confirmed') %>% pull
-valueBox(scales::comma(infected), 
+confirmed <- world %>% summarise(sum(confirmed, na.rm=TRUE)) %>% pull
+valueBox(scales::comma(confirmed), 
          icon = "fa-procedures",
          color = "warning")
 ```
 
-### 사망자수
+### 사망자수 {.value-box}
 
 ```{r death}
-death <- cv_stat %>% filter(type=='death') %>% pull
+death <- world %>% summarise(sum(death, na.rm=TRUE)) %>% pull
 valueBox(scales::comma(death), 
          icon = "fa-skull",
          color = "danger")
 ```
 
-### 회복자수
+### 회복자수 {.value-box}
 
 ```{r recovered}
-recovered <- cv_stat %>% filter(type=='recovered') %>% pull
+recovered <- world %>% summarise(sum(recovered, na.rm=TRUE)) %>% pull
 valueBox(scales::comma(recovered), 
          icon = "fa-walking",
          color = "success")
 ```
 
-Column {data-height=350}
+Row
+-----------------------------------------------------------------------
+
+### 국가/유형별 사례수
+
+```{r world_summary}
+library(highcharter)
+
+highchart() %>% 
+  hc_chart(type = "column") %>%
+  hc_plotOptions(column = list(stacking = "normal")) %>%
+  hc_xAxis(categories = world$country) %>%
+  hc_yAxis(type = 'logarithmic') %>%
+  hc_add_series(name="사망",
+                data = world$death,
+                stack = "코로나") %>% 
+  hc_add_series(name="회복",
+                data = world$recovered,
+                stack = "코로나") %>% 
+  hc_add_series(name="확진",
+                data = world$confirmed,
+                stack = "코로나") %>% 
+  hc_legend(enabled = TRUE) %>% 
+  hc_tooltip(pointFormat =  '{point.y} 명') %>% 
+  hc_add_theme(hc_theme_538())
+```
+
+
+Row  {data-width=400}
 -------------------------------------
 
-### Chart 1
+### 유형별 일별 누적 사례수
 
-```{r time-series-plot, eval=FALSE}
-library(gganimate) 
-options(gganimate.nframes = 100)
+```{r time-series-plot}
+library(xts)
+library(dygraphs)
 
-## 데이터 
-corona_ranked_by_date <- coronavirus %>% 
-  filter(type == 'confirmed') %>% 
-  group_by(country, date) %>% 
-  summarise(confirmed = sum(cases)) %>% 
-  ungroup() %>% 
-  group_by(country) %>% 
-  arrange(date) %>% 
-  mutate(cum_confirmed = cumsum(confirmed)) %>% # 국가별 누적환자수
-  ungroup() %>% 
-  group_by(date) %>% 
-  arrange(date, -cum_confirmed) %>% # 일별 상위 국가 선정
-  mutate(rank = 1:n()) %>% 
-  filter(rank <=7) %>% 
-  ungroup()
+world_cum_daily <- world_daily %>% 
+  select(날짜 = date,
+         확진 = confirmed_cum,
+         사망 = death_cum,
+         회복 = recovered_cum)
 
-## 테마
-library(extrafont)
-loadfonts()
+world_daily_xts <- xts(world_cum_daily[ ,-1], order.by=as.POSIXct(world_cum_daily$날짜))
 
-corona_theme <- theme_classic(base_family = "NanumGothic") +
-  theme(legend.position = "none") +
-  theme(axis.text.y = element_blank()) +
-  theme(axis.ticks.y = element_blank()) +
-  theme(axis.line.y = element_blank()) +
-  theme(legend.background = element_rect(fill = "gainsboro")) +
-  theme(plot.background = element_rect(fill = "gainsboro")) +
-  theme(panel.background = element_rect(fill = "gainsboro"))
+FUNC_JSFormatNumber <- "function(x) {return x.toString().replace(/(\\d)(?=(\\d{3})+(?!\\d))/g, '$1,')}"
 
-corona_plot <- corona_ranked_by_date %>% 
-  ggplot() +
-    aes(xmin = 0 ,  
-        xmax = cum_confirmed) +  
-    aes(ymin = rank - .45,  
-        ymax = rank + .45,  
-        y = rank) +
-    facet_wrap(~date) +
-    geom_rect(alpha = .7) +
-    aes(fill = country) +
-    scale_fill_viridis_d(option = "magma",
-                       direction = -1) +
-    scale_x_continuous(
-      limits = c(-15000, 80000)) +
-    geom_text(col = "gray13",  
-          hjust = "right",  
-          aes(label = country),  
-          x = -50) +
-    labs(fill = NULL) +  
-    labs(x = '감염자수') +  
-    labs(y = "") +  
-    scale_y_reverse() +
-    corona_theme
+dygraph(world_daily_xts) %>% 
+  dyHighlight(highlightCircleSize = 5, 
+            highlightSeriesBackgroundAlpha = 0.2,
+            hideOnMouseOut = FALSE) %>% 
+  dyRangeSelector(height = 20) %>% 
+  dyAxis("x", drawGrid = FALSE) %>%
+  dyAxis("y", axisLabelFormatter=JS(FUNC_JSFormatNumber),
+         valueFormatter=JS(FUNC_JSFormatNumber)) %>%
+  dyOptions(includeZero = TRUE, 
+          axisLineColor = "navy", 
+          gridLineColor = "lightblue") %>% 
+  dySeries("확진", label = "확진") %>%
+  dyLegend(width=400, show = "always", hideOnMouseOut = FALSE) %>% 
+  dyAnnotation("2020-02-17", text = "신천지 31번")
 
-corona_gif <- corona_plot +
-  facet_null() +
-  aes(group = country) +
-  geom_text(x = 55000 , y = -7,  
-          family = "NanumGothic",  
-          aes(label = as.character(date) ),  
-          size = 10, col = "grey18")  +
-  gganimate::transition_time(date)
-
-corona_gif
-anim_save("fig/corona.gif", corona_gif, duration=0.1)
-```
-
-```{r corona-gif}
-knitr::include_graphics('fig/corona.gif') 
 ```
 
 
-### Chart 2
+### 지역별 사례수  {data-width=400}
 
-```{r corona-leaflet}
+```{r corona-leaflet, eval=TRUE}
 library(leaflet)
-library(janitor)
 
-coronavirus %>% 
-  mutate(geo_name = glue::glue("{country} {province}")) %>% 
-  select(-country, -province) %>% 
-  group_by(geo_name, lat, long, type) %>%
-    summarise(cases = sum(cases, na.rm = TRUE)) %>% 
-    spread(type, cases, fill=0) %>% 
-    leaflet() %>%
-    addTiles() %>% 
-    addProviderTiles(providers$OpenStreetMap) %>% 
-    addMarkers(lng=~long, lat=~lat, clusterOptions = markerClusterOptions(),
-                     popup = ~ as.character(paste0("<strong> 코로나19 현황: ", geo_name, "</strong><br>",
-    "-----------------------------------------------------------<br>",
-                                                   "&middot; 감염: ", scales::comma(confirmed), "<br>",
-                                                   "&middot; 사망: ", scales::comma(death), "<br>",
-                                                   "&middot; 회복: ", scales::comma(recovered), "<br>")))
+world_map <- coronavirus %>% 
+  clean_names() %>% 
+  mutate(country = case_when(country_region == "United Arab Emirates" ~ "UAE",
+                             country_region == "Mainland China" ~ "China",
+                             country_region == "North Macedonia" ~ "N.Macedonia",
+                             TRUE ~ country_region) %>% trimws()
+  ) %>% 
+  group_by(country, type) %>% 
+  summarise(cases = sum(cases)) %>% 
+  spread(type, cases, fill = 0L)
+
+world_map_df <- map_data("world") %>% 
+  group_by(region) %>% 
+  summarise(long = mean(long),
+            lat  = mean(lat)) %>% 
+  right_join(world_map, by=c("region" = "country"))
+
+
+# world_map_df %>% 
+#   leaflet() %>%
+#     addTiles() %>% 
+#     addProviderTiles(providers$OpenStreetMap) %>% 
+#     addMarkers(lng=~long, lat=~lat, clusterOptions = markerClusterOptions(),
+#                      popup = ~ as.character(paste0("<strong> 코로나19 현황: ", region, "</strong><br>",
+#     "-----------------------------------------------------------<br>",
+#                                                    "&middot; 감염: ", scales::comma(confirmed), "<br>",
+#                                                    "&middot; 사망: ", scales::comma(death), "<br>",
+#                                                    "&middot; 회복: ", scales::comma(recovered), "<br>")))
+
+# map_data <- get_data_from_map(download_map_data("custom/world-eckert3-highres"))
+
+
+hcmap("custom/world-eckert3-highres", data = world_map_df, value = "confirmed",
+      joinBy = c("name", "region"), name = "코로나19",
+      dataLabels = list(enabled = TRUE, format = '{point.name}'),
+      borderColor = "#FAFAFA", borderWidth = 0.1,
+      tooltip = list(valueDecimals = 0, valueSuffix = " 명")) 
 ```
 
 
@@ -306,3 +329,42 @@ cv_kor_plot <- cv_kor_df %>%
 
 plotly::ggplotly(cv_kor_plot)
 ```
+
+정보
+=======================================================================
+
+**코로나19 대쉬보드 [^covid-vis]**
+
+[^covid-vis]: [COVID-19 Maps & visuals](http://www.cidrap.umn.edu/covid-19/maps-visuals)
+
+코로나19(covid-19) 관련 다양한 실시간 정보 및 현황을 다음 웹사이트를 통해서 얻을 수 있다.
+
+- [코로나19 powered by `Tidyverse Korea`](https://statkclee.github.io/covid-19/)
+- [코로나19(COVID-19): 실시간 상황판](https://wuhanvirus.kr/)
+- [Coronavirus COVID-19 global cases (Johns Hopkins)](https://gisanddata.maps.arcgis.com/apps/opsdashboard/index.html#/bda7594740fd40299423467b48e9ecf6)
+- [코로나바이러스감염증-19(COVID-19), 질병관리본부](http://ncov.mohw.go.kr/index_main.jsp)
+
+**데이터**
+
+- R 데이터 팩키지
+    - [`coronavirus`: The coronavirus dataset ](https://github.com/RamiKrispin/coronavirus)
+        - [`COVID-19`: Novel Coronavirus (COVID-19) Cases, provided by JHU CSSE](https://github.com/CSSEGISandData/COVID-19)
+    - [`covid`: Novel Coronavirus(2019-nCoV) updates from WHO daily reports](https://github.com/javierluraschi/covid)
+        - [PDF WHO 보고서](https://www.who.int/emergencies/diseases/novel-coronavirus-2019/situation-reports)
+- 한국 데이터셋
+    - [박찬엽 구글 쉬트](https://drive.google.com/drive/folders/1_bjm76OE2H2xluT0D3hScUjvON9DpWXr)
+        - [질병관리본부, 코로나19 발생동향](http://ncov.mohw.go.kr/bdBoardList_Real.do?brdId=1&brdGubun=13&ncvContSeq&contSeq&board_id&gubun)
+    - [코로나19 일별 감염현황](https://docs.google.com/spreadsheets/d/1fODH5PZJw9jxwV2GRe85BRQgc3mxdyyIpQ0I6MDJKXc/edit#gid=0)
+        - [이성규, 미디어고토사](https://www.mediagotosa.com/korona19-hwagsan-ilbyeol-hyeonhwang-jeongri/)
+
+
+**제작 방법과 배포**
+
+- [`Tidyverse Korea`, 대쉬보드(Dashboard)](https://statkclee.github.io/comp_document/cd-dashboard.html)
+- [`Tidyverse Korea`, `GitHub` 호스팅](https://statkclee.github.io/comp_document/cd-github-hosting.html)
+
+
+**연락방법**
+
+제작방법에 대해서 궁금하신 점이나 참여를 원하시는 분은 [issues](https://github.com/statkclee/covid-19/issues)에 남겨주시거나 
+[Tidyverse Korea 페북그룹](https://www.facebook.com/groups/tidyverse/)으로 연락주세요.
